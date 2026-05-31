@@ -13,6 +13,7 @@ It stores:
 - the active node name
 - pending tool-call bindings
 - the current nested node prefix
+- the active step context for `ToolLoopAgent` execution
 - any open parallel task bookkeeping
 
 The context is per top-level run.
@@ -48,8 +49,7 @@ instead of a generic `tool_loop_assistant`.
 
 ## Tool Calls
 
-When the scripted model decides to emit tool calls, it registers each tool-call
-id with:
+Manual-agent paths register each tool-call id with:
 
 - the concrete tool node name
 - the nested prefix that tool body work should inherit
@@ -61,6 +61,15 @@ That is what makes downstream tool-body LLM calls inherit names such as:
 
 - `manual_parallel_assistant.iter_0.choice_0.tool.fetch_a.llm.fetch_a_pass`
 
+`ToolLoopAgent` paths do not need hidden registration. The wrapper keeps the
+current step node, the active tool set, and the declared `allowedToolSets` in
+the run context, then derives the concrete tool node from that step context
+when the AI SDK executes the tool call. That is what allows a normal
+tool-calling model wrapper to produce node names such as:
+
+- `assistant.iter_1.choice_1.tool.analyze_branch_a.llm.analyze_branch_a`
+- `assistant.iter_1.choice_1.tool.analyze_branch_b.llm.analyze_branch_b`
+
 ## Scheduler Header Helpers
 
 `getSchedulerHeaders()` reads the active RID and node name from the context and
@@ -70,7 +79,8 @@ returns them as HTTP headers.
 map.
 
 A scheduler-backed gateway or model wrapper should call
-`bindSchedulerHeaders(...)` before every outbound request.
+`bindSchedulerHeaders(...)` before every outbound request. If the wrapper also
+needs Blackbox auth, use `bindBlackboxHeaders(workflowApiKey, headers?)`.
 
 ## Nested Agents
 

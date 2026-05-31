@@ -10,12 +10,20 @@ interface PendingToolCall {
   nestedPrefix: string;
 }
 
+interface StepContext {
+  nodeName: string;
+  nestedPrefix?: string;
+  allowedToolSets: string[][];
+  activeToolNames?: string[];
+}
+
 interface AgentIRRunState {
   rid: string;
   currentNodeName?: string;
   parallelTasks: Promise<unknown>[];
   pendingToolCalls: Map<string, PendingToolCall>;
   nestedPrefix?: string;
+  stepContext?: StepContext;
 }
 
 const runStorage = new AsyncLocalStorage<AgentIRRunState>();
@@ -55,13 +63,28 @@ export function getCurrentNestedPrefix() {
   return runStorage.getStore()?.nestedPrefix;
 }
 
-export function setStepContext(nodeName: string, nestedPrefix?: string) {
+export function getCurrentStepContext() {
+  return runStorage.getStore()?.stepContext;
+}
+
+export function setStepContext(
+  nodeName: string,
+  nestedPrefix?: string,
+  allowedToolSets: string[][] = [],
+  activeToolNames?: string[],
+) {
   const state = runStorage.getStore();
   if (!state) {
     return;
   }
   state.currentNodeName = nodeName;
   state.nestedPrefix = nestedPrefix;
+  state.stepContext = {
+    nodeName,
+    nestedPrefix,
+    allowedToolSets,
+    activeToolNames,
+  };
 }
 
 export function getSchedulerHeaders(): Record<string, string> {
@@ -81,6 +104,24 @@ export function bindSchedulerHeaders<T extends Record<string, string | undefined
     ...(headers ?? {}),
     ...getSchedulerHeaders(),
   };
+}
+
+export function getBlackboxHeaders<T extends Record<string, string | undefined>>(
+  workflowApiKey: string,
+  headers?: T,
+) {
+  return {
+    ...getSchedulerHeaders(),
+    ...(headers ?? {}),
+    Authorization: `Bearer ${workflowApiKey}`,
+  };
+}
+
+export function bindBlackboxHeaders<T extends Record<string, string | undefined>>(
+  workflowApiKey: string,
+  headers?: T,
+) {
+  return getBlackboxHeaders(workflowApiKey, headers);
 }
 
 export function bindSchedulerClient<T>(client: T): T {
@@ -105,19 +146,17 @@ export async function withNodeName<T>(
     return await fn();
   }
 
-  const previousNodeName = state.currentNodeName;
-  const previousNestedPrefix = state.nestedPrefix;
-  state.currentNodeName = nodeName;
-  if (options.nestedPrefix !== undefined) {
-    state.nestedPrefix = options.nestedPrefix;
-  }
-
-  try {
-    return await fn();
-  } finally {
-    state.currentNodeName = previousNodeName;
-    state.nestedPrefix = previousNestedPrefix;
-  }
+  return await runStorage.run(
+    {
+      ...state,
+      currentNodeName: nodeName,
+      nestedPrefix:
+        options.nestedPrefix !== undefined
+          ? options.nestedPrefix
+          : state.nestedPrefix,
+    },
+    fn,
+  );
 }
 
 export function registerPendingToolCall(

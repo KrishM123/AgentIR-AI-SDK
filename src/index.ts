@@ -1,7 +1,9 @@
 export { buildContract } from "./compiler.js";
 export { contractToJson } from "./contract.js";
 export {
+  bindBlackboxHeaders,
   bindSchedulerClient,
+  getBlackboxHeaders,
   bindSchedulerHeaders,
   getCurrentNodeName,
   getCurrentRid,

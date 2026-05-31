@@ -43,6 +43,9 @@ Semantics:
 - `allowedToolSets` describe which sibling tool calls may appear after that
   step.
 - `prepareStep` is used to bind the current unrolled node name at runtime.
+- Real AI SDK `ToolLoopAgent` runs may execute tool calls directly from the
+  model response. Users do not need private helper imports or out-of-band
+  tool-call registration.
 
 ### `defineManualAgent(...)`
 
@@ -180,11 +183,29 @@ The package enforces that by:
 
 - creating one `AsyncLocalStorage` context per run
 - setting the current step node before each `ToolLoopAgent` step
-- binding tool-call ids to the concrete unrolled tool node they represent
+- binding tool-call ids to the concrete unrolled tool node they represent in
+  manual-agent paths
+- inferring the concrete tool node from the active step context and current
+  tool-call execution state in `ToolLoopAgent` paths
 - restoring nested node prefixes while tool bodies and subagents execute
 
 If a scheduler-backed client uses `bindSchedulerHeaders(...)`, every outbound
 call inherits the active RID and node name automatically.
+
+## OpenAI-Compatible ToolLoopAgent Pattern
+
+The supported user pattern is:
+
+1. build or keep a normal AI SDK model wrapper that calls
+   `/v1/chat/completions`
+2. call `bindBlackboxHeaders(workflowApiKey, headers?)` before each outbound
+   request
+3. return tool calls exactly as the endpoint emitted them
+4. run tool-body LLM work inside `llmCall(...)`
+5. keep the compile-visible `body` markers aligned with that runtime LLM work
+
+AgentIR does not require a custom control loop, private imports, or a separate
+tool-call planner for this path.
 
 ## Supported Patterns
 

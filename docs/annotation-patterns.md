@@ -160,7 +160,46 @@ Important invariants:
 - `allowedToolSets` must enumerate the actual mutually exclusive tool sets
 - the repeated model step is treated as one unrolled `.step` node per iteration
 
-## 5. Manual Loop Entry Point
+## 5. OpenAI-Compatible ToolLoopAgent Model Wrapper
+
+Users can keep a normal AI SDK model wrapper around an OpenAI-compatible
+endpoint. The important runtime requirement is to forward the real tool-call and
+streaming payloads instead of deciding tool calls locally.
+
+```ts
+class GatewayBackedModel implements LanguageModelV3 {
+  readonly specificationVersion = "v3";
+  readonly provider = "example";
+  readonly modelId = "scheduler";
+  readonly supportedUrls = {};
+
+  async doGenerate(options: LanguageModelV3CallOptions) {
+    const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...bindBlackboxHeaders(workflowApiKey, options.headers),
+      },
+      body: JSON.stringify({
+        model: "scheduler",
+        messages: toOpenAiMessages(options.prompt),
+        tools: toOpenAiTools(options.tools),
+        tool_choice: toOpenAiToolChoice(options.toolChoice),
+      }),
+    });
+    return fromOpenAiResponse(await response.json());
+  }
+}
+```
+
+Important invariants:
+
+- use only the public package root imports
+- forward the endpoint's actual `tool_calls` and streamed chunks
+- do not register hidden tool bindings in application code
+- keep tool `execute(...)` and compile-visible `body` markers aligned
+
+## 6. Manual Loop Entry Point
 
 Use `defineManualAgent(...)` when the repo owns the step loop and you want the
 compiler to treat it the same way as a ToolLoopAgent.

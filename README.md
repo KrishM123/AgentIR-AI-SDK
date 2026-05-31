@@ -9,6 +9,8 @@ Vercel AI SDK agents into AgentIR.
 - build scheduler-facing contracts for ReAct-style loops
 - propagate RID and node-name metadata into scheduler-backed model calls
 - bind scheduler headers into custom model or gateway wrappers
+- support real AI SDK `ToolLoopAgent` executions against OpenAI-compatible
+  `/v1/chat/completions` endpoints
 
 Read the full interface and implementation docs here:
 
@@ -28,6 +30,7 @@ Read the full interface and implementation docs here:
 - agent and tool wrappers in `src/definitions.ts`
 - marker helpers in `src/markers.ts`
 - usage guidance in `interface.md` and `docs/`
+- Blackbox runtime header helpers for OpenAI-compatible chat requests
 
 ## Install
 
@@ -55,3 +58,7 @@ import {
 - Tool fanout must be declared through `allowedToolSets`. The compiler does not infer dynamic tool availability.
 - Helper bodies are compile-visible only through the explicit marker calls above.
 - Runtime RID and node-name propagation is mandatory for scheduler-backed model calls.
+- Use `bindBlackboxHeaders(workflowApiKey, headers?)` or `getBlackboxHeaders(workflowApiKey, headers?)`
+  when a runtime client needs bearer auth plus the current `rid` and `node-name`.
+- Tool `execute(...)` and compile-visible `body` markers must describe the same
+  LLM work. The `body` is annotation metadata, not a fallback runtime path.

@@ -10,6 +10,7 @@ import type {
 } from "ai";
 
 import {
+  getCurrentStepContext,
   takePendingToolCall,
   withAgentIRRun,
   withNodeName,
@@ -124,17 +125,104 @@ function resolveCurrentPrefix(name: string) {
   return getCurrentNestedPrefix() ?? rootPrefix(name);
 }
 
+function findAllowedToolSetIndex(allowedToolSets: string[][], toolNames: string[]) {
+  const requested = [...toolNames].sort();
+  return allowedToolSets.findIndex((candidate) => {
+    const normalized = [...candidate].sort();
+    return normalized.length === requested.length && normalized.every((name, index) => name === requested[index]);
+  });
+}
+
+function parseStepNodeName(nodeName: string) {
+  const match = /^(.*)\.iter_(\d+)\.step$/.exec(nodeName);
+  if (!match) {
+    return undefined;
+  }
+  return {
+    prefix: match[1],
+    iteration: Number.parseInt(match[2]!, 10),
+  };
+}
+
+function toolCallNamesForExecution(messages: ModelMessage[], toolCallId: string) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role !== "assistant" || typeof message.content === "string") {
+      continue;
+    }
+    const toolCallParts = message.content.filter((part) => part.type === "tool-call");
+    if (!toolCallParts.some((part) => part.toolCallId === toolCallId)) {
+      continue;
+    }
+    return toolCallParts.map((part) => part.toolName);
+  }
+  return undefined;
+}
+
+function activeToolNamesForStepContext(
+  stepContext: ReturnType<typeof getCurrentStepContext>,
+  toolName: string,
+) {
+  const activeToolNames = stepContext?.activeToolNames;
+  if (!activeToolNames || activeToolNames.length === 0) {
+    return undefined;
+  }
+  return activeToolNames.includes(toolName) ? activeToolNames : undefined;
+}
+
+function inferToolLoopBinding(
+  toolName: string,
+  executionOptions: ToolExecutionOptions,
+) {
+  const stepContext = getCurrentStepContext();
+  if (!stepContext) {
+    return undefined;
+  }
+
+  const stepInfo = parseStepNodeName(stepContext.nodeName);
+  if (!stepInfo) {
+    return undefined;
+  }
+
+  const toolCallNames =
+    activeToolNamesForStepContext(stepContext, toolName) ??
+    (executionOptions.toolCallId
+      ? toolCallNamesForExecution(
+          executionOptions.messages,
+          executionOptions.toolCallId,
+        )
+      : undefined);
+  if (!toolCallNames) {
+    return undefined;
+  }
+
+  const toolSetIndex = findAllowedToolSetIndex(
+    stepContext.allowedToolSets,
+    toolCallNames,
+  );
+  if (toolSetIndex < 0) {
+    throw new Error(
+      `Tool calls [${toolCallNames.join(", ")}] do not match any declared allowedToolSets entry.`,
+    );
+  }
+
+  const sanitizedToolName = sanitizeName(toolName);
+  const nodeName =
+    `${stepInfo.prefix}.iter_${stepInfo.iteration}.choice_${toolSetIndex}.tool.${sanitizedToolName}`;
+  return {
+    nodeName,
+    nestedPrefix: nodeName,
+  };
+}
+
 function registerManualToolBindings(
   prefix: string,
   iteration: number,
   allowedToolSets: string[][],
   toolCalls: Array<{ toolCallId: string; toolName: string }>,
 ) {
-  const requested = [...toolCalls.map((toolCall) => toolCall.toolName)].sort();
-  const toolSetIndex = allowedToolSets.findIndex((candidate) => {
-    const normalized = [...candidate].sort();
-    return normalized.length === requested.length && normalized.every((name, index) => name === requested[index]);
-  });
+  const requested = toolCalls.map((toolCall) => toolCall.toolName);
+  const toolSetIndex = findAllowedToolSetIndex(allowedToolSets, requested);
 
   if (toolSetIndex < 0) {
     throw new Error(
@@ -165,7 +253,9 @@ export function defineAgentIRTool<INPUT, OUTPUT>(options: {
       if (!tool.execute) {
         return undefined as OUTPUT;
       }
-      const binding = takePendingToolCall(executionOptions.toolCallId);
+      const binding =
+        takePendingToolCall(executionOptions.toolCallId) ??
+        inferToolLoopBinding(name, executionOptions);
       const nodeName = binding?.nodeName ?? sanitizeName(name);
       const nestedPrefix = binding?.nestedPrefix ?? nodeName;
       return await withNodeName(
@@ -235,11 +325,18 @@ export function defineToolLoopAgent<TOOLS extends ToolSet>(options: {
         : instructions ?? settings.instructions,
     tools: settings.tools as unknown as TOOLS,
     prepareStep: async (prepareOptions) => {
+      const stepNodeName = `${resolveCurrentPrefix(name)}.iter_${prepareOptions.stepNumber}.step`;
+      const prepareResult = await settings.prepareStep?.(prepareOptions);
+      const activeToolNames = Array.isArray(prepareResult?.activeTools)
+        ? prepareResult.activeTools.map((toolName) => String(toolName))
+        : undefined;
       setStepContext(
-        `${resolveCurrentPrefix(name)}.iter_${prepareOptions.stepNumber}.step`,
+        stepNodeName,
         resolveCurrentPrefix(name),
+        allowedToolSets,
+        activeToolNames,
       );
-      return await settings.prepareStep?.(prepareOptions);
+      return prepareResult;
     },
     onStepFinish: async (event) => {
       await settings.onStepFinish?.(event);
@@ -296,7 +393,11 @@ function createManualDefinition(metadata: ManualAgentMetadata): AgentIRManualDef
             : [];
 
         for (let iteration = 0; iteration < metadata.maxIterations; iteration += 1) {
-          setStepContext(`${prefix}.iter_${iteration}.step`, prefix);
+          setStepContext(
+            `${prefix}.iter_${iteration}.step`,
+            prefix,
+            metadata.allowedToolSets,
+          );
           const decision = await metadata.runStep({
             stepNumber: iteration,
             prompt: input.prompt,
